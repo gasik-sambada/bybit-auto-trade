@@ -1,0 +1,17 @@
+services:
+  bybit-auto-trade:
+    build: .
+    container_name: bybit-auto-trade
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    env_file:
+      - .env
+    volumes:
+      # Mount config so you can update symbols.yaml without rebuilding
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:9000/health'); exit(0 if r.status_code == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

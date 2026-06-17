@@ -1,0 +1,10 @@
+.git
+.gitignore
+*.md
+test_trade.sh
+__pycache__
+*.pyc
+*.pyo
+.env
+.env.*
+!.env.example
