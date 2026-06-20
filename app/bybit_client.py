@@ -8,9 +8,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import ssl
 import time
 from typing import Any, Dict, Optional
 
+import certifi
 import httpx
 
 from .config import AccountConfig, SymbolConfig
@@ -19,6 +21,27 @@ logger = logging.getLogger(__name__)
 
 # Bybit v5 API timeout
 _TIMEOUT = 15.0
+
+# ─── SSL context ──────────────────────────────────────────────────────────────
+# Force TLS 1.2+ and use certifi's up-to-date CA bundle.
+# This fixes SSL handshake failures on servers with outdated system OpenSSL.
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+_SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
+
+# Shared httpx client — reused across all requests for connection pooling.
+# verify= accepts an ssl.SSLContext directly in httpx.
+_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    """Return the shared httpx client, creating it on first call."""
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=_TIMEOUT,
+            verify=_SSL_CONTEXT,
+        )
+    return _HTTP_CLIENT
 
 
 # ─── Request signing ──────────────────────────────────────────────────────────
@@ -65,8 +88,8 @@ class BybitClient:
 
         logger.debug(f"[{self._account.name}] POST {url} body={body}")
 
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(url, content=body, headers=headers)
+        client = _get_http_client()
+        resp = await client.post(url, content=body, headers=headers)
 
         data = resp.json()
         ret_code = data.get("retCode", -1)
@@ -101,8 +124,8 @@ class BybitClient:
             "X-BAPI-RECV-WINDOW": rw,
         }
         url = f"{self._base}{endpoint}"
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.get(url, params=params, headers=headers)
+        client = _get_http_client()
+        resp = await client.get(url, params=params, headers=headers)
         return resp.json()
 
     # ── Leverage ──────────────────────────────────────────────────────────────
