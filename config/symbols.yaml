@@ -11,38 +11,53 @@
 #               ACCOUNT_N_BTCUSDT.P_LEVERAGE env var.
 # order_type  : Default order type — Market (default) or Limit.
 #               Can be overridden per-alert from TradingView ("order_type" field).
+# qty_step    : Bybit lot size step size. Qty is rounded DOWN to this before placing.
+#               Find for any symbol at: https://bybit.com/trade/usdt/<SYMBOL>
+#               (check contract details → lot size).
+#               Common values:
+#                 BTC = 0.001  | ETH  = 0.01  | SOL  = 0.1
+#                 XRP = 1      | BNB  = 0.01  | MNT  = 1
+#               Default (if omitted) = 0.001
 #
 symbols:
   # ── Perpetual FUTURES (linear) ── auto-detected as FUTURES from .P suffix ──────
   BTCUSDT.P:
     leverage: 10
     order_type: Market
+    qty_step: 0.001       # BTC min qty = 0.001
 
   ETHUSDT.P:
     leverage: 10
     order_type: Market
+    qty_step: 0.01        # ETH min qty = 0.01
 
   SOLUSDT.P:
     leverage: 10
     order_type: Market
+    qty_step: 0.1         # SOL min qty = 0.1
 
   XRPUSDT.P:
     leverage: 10
     order_type: Market
+    qty_step: 1           # XRP min qty = 1
 
   BNBUSDT.P:
     leverage: 10
     order_type: Market
+    qty_step: 0.01        # BNB min qty = 0.01
 
   MNTUSDT.P:
     leverage: 25
     order_type: Market
+    qty_step: 1           # MNT min qty = 1 (integer only)
 
   MNTUSDC:
     leverage: 25
     order_type: Market
+    qty_step: 1           # MNT min qty = 1 (integer only)
 
   # ── SPOT examples ── auto-detected as SPOT (no .P suffix) ──────────────────────
   # BTCUSDT:
   #   leverage: 1   # ignored for SPOT, but kept for consistency
   #   order_type: Market
+  #   qty_step: 0.000048  # SPOT BTC min qty is different from futures

@@ -35,12 +35,16 @@ class SymbolConfig:
     symbol:      Full symbol key including .P suffix for perpetuals, e.g. BTCUSDT.P
     api_symbol:  Bybit API symbol name (no suffix), e.g. BTCUSDT
     market_type: FUTURES (linear perpetual) or SPOT
+    qty_step:    Bybit lot size step. Round qty DOWN to this value before placing.
+                 Check Bybit's instrument info for each symbol.
+                 Examples: BTC=0.001, ETH=0.01, SOL=0.1, MNT=1, XRP=1
     """
 
     symbol: str
     market_type: str = "FUTURES"   # "FUTURES" or "SPOT"
     leverage: int = 10             # default leverage (overridable per account)
     order_type: str = "Market"     # "Market" or "Limit"
+    qty_step: float = 0.001        # lot size step (round down qty to this)
 
     @property
     def api_symbol(self) -> str:
@@ -150,6 +154,7 @@ def _load_symbols_yaml(path: str) -> Dict[str, SymbolConfig]:
             market_type=market_type,
             leverage=int(cfg.get("leverage", 10)),
             order_type=str(cfg.get("order_type", "Market")),
+            qty_step=float(cfg.get("qty_step", 0.001)),
         )
 
     logger.info(f"Loaded {len(symbols)} symbols from {path}: {list(symbols.keys())}")

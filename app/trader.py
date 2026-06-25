@@ -2,12 +2,14 @@
 
 For each incoming trade command:
 1. Find all accounts that have the symbol enabled.
-2. Resolve symbol config (market_type, leverage, order_type).
+2. Resolve symbol config (market_type, leverage, order_type, qty_step).
 3. Calculate order quantity using risk-based sizing:
-      qty = min_loss_usd / |entry_price - sl_price| / leverage   (FUTURES)
-      qty = min_loss_usd / |entry_price - sl_price|              (SPOT, leverage=1)
-4. Set leverage on Bybit (FUTURES only).
-5. Place the order.
+      qty = min_loss_usd / |entry_price - sl_price|
+      (For linear perpetuals, P&L = qty × price_change regardless of leverage.
+       Leverage only affects margin, not the dollar risk per unit.)
+4. Round qty DOWN to the symbol's qty_step (configurable in symbols.yaml).
+5. Set leverage on Bybit (FUTURES only).
+6. Place the order.
 
 The order_type can be overridden per-alert from TradingView.
 If not provided in the alert, the per-symbol default from symbols.yaml is used.
@@ -60,32 +62,40 @@ def _calculate_qty(
     """
     Risk-based qty calculation.
 
-    For FUTURES: qty = min_loss_usd / (|entry - sl| * leverage)
-        The dollar value of 1 unit move = 1 USD for linear perpetuals.
-        With leverage the effective risk per unit = |entry - sl| (leverage already
-        in the position, not in the qty formula — qty is in base-coin units).
+    For linear perpetuals: P&L = qty × |price_change|
+    So your max loss = qty × sl_distance, independent of leverage.
+    Leverage only determines required margin, not dollar risk per unit.
 
-    For SPOT (leverage=1): qty = min_loss_usd / |entry - sl|
+      qty = min_loss_usd / sl_distance
+
+    For SPOT it's the same formula (leverage=1 by definition).
     """
     sl_distance = abs(entry_price - sl_price)
     if sl_distance == 0:
         raise ValueError("stop-loss price equals entry price — cannot calculate qty")
 
-    if is_futures:
-        # Linear perpetual: PnL = qty * |price_change|
-        # Risk = qty * sl_distance = min_loss_usd
-        qty = min_loss_usd / sl_distance
-    else:
-        qty = min_loss_usd / sl_distance
-
-    return qty
+    return min_loss_usd / sl_distance
 
 
 def _format_qty(qty: float, symbol_cfg: SymbolConfig) -> str:
-    """Format qty to a reasonable precision string for Bybit."""
-    # Bybit usually requires up to 3 decimal places for most symbols
-    # Use up to 4 significant decimals, strip trailing zeros
-    formatted = f"{qty:.4f}".rstrip("0").rstrip(".")
+    """
+    Round qty DOWN to the symbol's qty_step and return as a string.
+
+    Examples:
+      qty_step=1      → 434.78  becomes "434"
+      qty_step=0.1    → 434.78  becomes "434.7"
+      qty_step=0.001  → 0.12345 becomes "0.123"
+    """
+    step = symbol_cfg.qty_step
+    # Floor to nearest step
+    floored = math.floor(qty / step) * step
+    # Determine decimal places from step size
+    if step >= 1:
+        decimals = 0
+    else:
+        import decimal as _d
+        decimals = abs(_d.Decimal(str(step)).as_tuple().exponent)
+    formatted = f"{floored:.{decimals}f}"
     return formatted if formatted else "0"
 
 
