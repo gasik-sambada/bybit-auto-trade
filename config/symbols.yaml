@@ -38,6 +38,10 @@ symbols:
     leverage: 25
     order_type: Market
 
+  MNTUSDC:
+    leverage: 25
+    order_type: Market
+
   # ── SPOT examples ── auto-detected as SPOT (no .P suffix) ──────────────────────
   # BTCUSDT:
   #   leverage: 1   # ignored for SPOT, but kept for consistency
