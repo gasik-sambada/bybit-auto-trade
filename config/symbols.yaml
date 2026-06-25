@@ -47,7 +47,7 @@ symbols:
     qty_step: 0.01        # BNB min qty = 0.01
 
   MNTUSDT.P:
-    leverage: 25
+    leverage: 1
     order_type: Market
     qty_step: 1           # MNT min qty = 1 (integer only)
 
