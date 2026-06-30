@@ -146,7 +146,7 @@ async def _execute_for_account(
     client = BybitClient(account)
 
     if req.action == "close_all":
-        return await _handle_close_all(client, account, symbol_cfg)
+        return await _handle_close_all(client, account, symbol_cfg, req)
 
     if req.action == "update_sl_tp":
         return await _handle_update_sl_tp(client, account, symbol_cfg, req)
@@ -166,10 +166,19 @@ async def _handle_close_all(
     client: BybitClient,
     account: AccountConfig,
     symbol_cfg: SymbolConfig,
+    req: TradeRequest,
 ) -> TradeResult:
-    """Handle close_all action: cancel orders + close positions."""
+    """Handle close_all action: cancel orders + close positions.
+
+    If req.side is set ("BUY"/"SELL"), only positions on that side are closed.
+    This prevents a 'close shorts' alert from accidentally closing a newly opened long.
+    """
+    # Translate TradingView side ("buy"/"sell") → Bybit side ("Buy"/"Sell")
+    side_map = {"buy": "Buy", "long": "Buy", "sell": "Sell", "short": "Sell"}
+    close_side = side_map.get(req.side.lower(), "") if req.side else ""
+
     try:
-        await client.cancel_and_close_all(symbol_cfg)
+        await client.cancel_and_close_all(symbol_cfg, close_side=close_side)
         return TradeResult(
             account_name=account.name,
             symbol=symbol_cfg.symbol,

@@ -232,8 +232,15 @@ class BybitClient:
             f"[{self._account.name}] Closed position {symbol_cfg.symbol} side={side} size={size}"
         )
 
-    async def cancel_and_close_all(self, symbol_cfg: SymbolConfig) -> None:
-        """Cancel all orders, then close all open positions for a symbol."""
+    async def cancel_and_close_all(self, symbol_cfg: SymbolConfig, close_side: str = "") -> None:
+        """Cancel all orders, then close open positions for a symbol.
+
+        Args:
+            symbol_cfg:  Symbol configuration.
+            close_side:  Optional Bybit side to filter ("Buy" or "Sell").
+                         When set, only positions on that side are closed.
+                         When empty, ALL positions for the symbol are closed.
+        """
         await self.cancel_all_orders(symbol_cfg)
 
         if symbol_cfg.is_futures():
@@ -241,8 +248,16 @@ class BybitClient:
             for pos in positions:
                 size = pos.get("size", "0")
                 side = pos.get("side", "")
-                if size and size not in ("0", "0.0", "") and side:
-                    await self.close_position(symbol_cfg, side, size)
+                if not size or size in ("0", "0.0", "") or not side:
+                    continue
+                # If a specific side was requested, skip positions on the other side
+                if close_side and side != close_side:
+                    logger.info(
+                        f"[{self._account.name}] Skipping {side} position for "
+                        f"{symbol_cfg.symbol} (close_side={close_side})"
+                    )
+                    continue
+                await self.close_position(symbol_cfg, side, size)
 
     async def update_position_sl_tp(
         self,

@@ -120,7 +120,9 @@ async def trade(request: Request):
     Expected JSON body for 'close_all':
         {
           "action": "close_all",
-          "symbol": "BTCUSDT.P"
+          "symbol": "BTCUSDT.P",
+          "side":   "sell"    // optional: "buy" closes only longs, "sell" closes only shorts.
+                              // Omit to close ALL positions for the symbol.
         }
     """
     if not _authorized(request):
@@ -204,9 +206,13 @@ async def close(request: Request):
     if not symbol:
         return {"status": "error", "error": "symbol is required"}
 
-    logger.info(f"📩 /close: symbol={symbol}")
+    logger.info(f"📩 /close: symbol={symbol} side={data.get('side', '(all)')}")
 
-    req = TradeRequest(action="close_all", symbol=symbol)
+    req = TradeRequest(
+        action="close_all",
+        symbol=symbol,
+        side=data.get("side", ""),
+    )
 
     try:
         results = await execute_trade(config, req)
