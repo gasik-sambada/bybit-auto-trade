@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class TradeRequest:
     """Parsed incoming trade command."""
 
-    action: str           # "open", "close_all", or "update_sl_tp"
+    action: str           # "open", "close_all", "update_sl_tp", or "partial_tp"
     symbol: str           # e.g. "BTCUSDT.P" (with .P suffix for perpetuals)
     side: str = ""        # "BUY" or "SELL" (for "open")
     price: str = ""       # entry price as string (for Limit orders)
@@ -153,6 +153,9 @@ async def _execute_for_account(
 
     if req.action == "open":
         return await _handle_open(client, account, symbol_cfg, req)
+
+    if req.action == "partial_tp":
+        return await _handle_partial_tp(client, account, symbol_cfg, req)
 
     return TradeResult(
         account_name=account.name,
@@ -339,5 +342,117 @@ async def _handle_open(
         logger.error(f"[{account.name}] place_order failed for {symbol}: {exc}")
         return TradeResult(
             account_name=account.name, symbol=symbol, success=False,
+            error=str(exc),
+        )
+
+
+async def _handle_partial_tp(
+    client: BybitClient,
+    account: AccountConfig,
+    symbol_cfg: SymbolConfig,
+    req: TradeRequest,
+) -> TradeResult:
+    """
+    Handle partial_tp action: place a reduce-only limit order for 50% of the
+    open position at the Partial TP price.
+
+    This should be called AFTER the entry order is confirmed filled.
+    The LLM calculates Partial TP at 1:1 R:R from average entry.
+    """
+    symbol = symbol_cfg.symbol
+
+    if not symbol_cfg.is_futures():
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol,
+            success=False,
+            error="partial_tp is only supported for FUTURES (symbol with .P suffix)",
+        )
+
+    tp_price = req.tp
+    if not tp_price:
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol,
+            success=False,
+            error="partial_tp requires 'tp' price",
+        )
+
+    # ── Get open positions ────────────────────────────────────────────────────
+    try:
+        positions = await client.get_positions(symbol_cfg)
+    except Exception as exc:
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol,
+            success=False,
+            error=f"get_positions failed: {exc}",
+        )
+
+    # Find the active position
+    active_pos = None
+    for pos in positions:
+        size = pos.get("size", "0")
+        side = pos.get("side", "")
+        if size and size not in ("0", "0.0", "") and side:
+            active_pos = pos
+            break
+
+    if active_pos is None:
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol,
+            success=False,
+            error="No open position found for partial_tp — position may not be filled yet",
+        )
+
+    pos_size = float(active_pos["size"])
+    pos_side = active_pos["side"]  # "Buy" or "Sell"
+
+    # ── Calculate 50% qty ─────────────────────────────────────────────────────
+    partial_qty_float = pos_size / 2.0
+
+    # Round down to qty_step
+    partial_qty_str = _format_qty(partial_qty_float, symbol_cfg)
+
+    if float(partial_qty_str) <= 0:
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol,
+            success=False,
+            error=f"Calculated partial qty {partial_qty_str} is too small (pos_size={pos_size})",
+        )
+
+    # ── Partial TP side is opposite of position ───────────────────────────────
+    # Long position → Sell to partially close
+    # Short position → Buy to partially close
+    close_side = "Sell" if pos_side == "Buy" else "Buy"
+
+    logger.info(
+        f"[{account.name}] PartialTP: {symbol} pos_size={pos_size} "
+        f"partial_qty={partial_qty_str} close_side={close_side} tp_price={tp_price}"
+    )
+
+    # ── Place reduce-only limit order ─────────────────────────────────────────
+    try:
+        await client.place_reduce_only_limit(
+            symbol_cfg=symbol_cfg,
+            side=close_side,
+            qty=partial_qty_str,
+            price=tp_price,
+        )
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol,
+            success=True,
+            qty=partial_qty_str,
+            order_type="Limit",
+        )
+    except Exception as exc:
+        logger.error(f"[{account.name}] partial_tp failed for {symbol}: {exc}")
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol,
+            success=False,
             error=str(exc),
         )

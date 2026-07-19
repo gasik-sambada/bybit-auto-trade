@@ -97,6 +97,7 @@ async def trade(request: Request):
       open         — Open a new position
       close_all    — Cancel all orders + close all positions
       update_sl_tp — Update SL/TP on all open positions for the symbol
+      partial_tp   — Place a reduce-only limit order for 50% of the open position
 
     Expected JSON body for 'open':
         {
@@ -124,6 +125,15 @@ async def trade(request: Request):
           "side":   "sell"    // optional: "buy" closes only longs, "sell" closes only shorts.
                               // Omit to close ALL positions for the symbol.
         }
+
+    Expected JSON body for 'partial_tp':
+        {
+          "action": "partial_tp",
+          "symbol": "BTCUSDT.P",
+          "tp":     "108000.00"    // limit price for the 50% reduce-only close order
+        }
+        This places a GTC reduce-only limit order for exactly 50% of the current
+        open position size. Call this AFTER the entry order has been filled.
     """
     if not _authorized(request):
         logger.warning(f"Unauthorized request from {request.client.host}")
@@ -139,8 +149,8 @@ async def trade(request: Request):
 
     if not symbol:
         return {"status": "error", "error": "symbol is required"}
-    if action not in ("open", "close_all", "update_sl_tp"):
-        return {"status": "error", "error": f"Unsupported action: {action!r} (expected open, close_all, or update_sl_tp)"}
+    if action not in ("open", "close_all", "update_sl_tp", "partial_tp"):
+        return {"status": "error", "error": f"Unsupported action: {action!r} (expected open, close_all, update_sl_tp, or partial_tp)"}
 
     logger.info(f"📩 /trade: action={action} symbol={symbol} side={data.get('side', '')} "
                 f"price={data.get('price', '')} sl={data.get('sl', '')} order_type={data.get('order_type', '(default)')}")

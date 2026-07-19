@@ -259,6 +259,46 @@ class BybitClient:
                     continue
                 await self.close_position(symbol_cfg, side, size)
 
+    async def place_reduce_only_limit(
+        self,
+        symbol_cfg: SymbolConfig,
+        side: str,        # "Buy" or "Sell" (opposite of position side)
+        qty: str,         # quantity to close (e.g. 50% of position)
+        price: str,       # limit price for partial TP
+    ) -> Dict[str, Any]:
+        """
+        Place a reduce-only GTC limit order for partial take-profit.
+
+        Used to close 50% of an open position at the Partial TP price
+        while keeping the other 50% open for the Final TP.
+
+        Args:
+            symbol_cfg:  Symbol configuration.
+            side:        Opposite of position side (long → "Sell", short → "Buy").
+            qty:         Quantity to close (50% of open position size).
+            price:       Limit price for the partial TP order.
+        """
+        if not symbol_cfg.is_futures():
+            raise ValueError("place_reduce_only_limit is only supported for FUTURES symbols")
+
+        payload: Dict[str, Any] = {
+            "category":    "linear",
+            "symbol":      symbol_cfg.api_symbol,
+            "side":        side,
+            "orderType":   "Limit",
+            "qty":         qty,
+            "price":       price,
+            "timeInForce": "GTC",
+            "reduceOnly":  True,
+            "positionIdx": 0,  # one-way mode
+        }
+
+        logger.info(
+            f"[{self._account.name}] PartialTP reduce-only Limit {side} {qty} "
+            f"{symbol_cfg.symbol} @ {price}"
+        )
+        return await self._post("/v5/order/create", payload)
+
     async def update_position_sl_tp(
         self,
         symbol_cfg: SymbolConfig,
