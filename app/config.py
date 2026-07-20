@@ -208,16 +208,22 @@ def _load_accounts_from_env(symbols: Dict[str, SymbolConfig]) -> List[AccountCon
 
         min_loss_usd = float(os.getenv(f"{prefix}MIN_LOSS_USD", "10"))
 
-        # Per-symbol leverage overrides: ACCOUNT_N_BTCUSDT_LEVERAGE=20
+        # Per-symbol leverage overrides: ACCOUNT_N_BTCUSDT_P_LEVERAGE=20
         leverage_overrides: Dict[str, int] = {}
         for sym in account_symbols:
-            lev_key = f"{prefix}{sym}_LEVERAGE"
-            lev_val = os.getenv(lev_key)
+            # Convert dots to underscores so it's a valid bash identifier
+            # e.g. BTCUSDT.P -> ACCOUNT_1_BTCUSDT_P_LEVERAGE
+            sym_env_safe = sym.replace(".", "_")
+            lev_key = f"{prefix}{sym_env_safe}_LEVERAGE"
+            
+            # Check the underscore version first, fallback to the dot version
+            lev_val = os.getenv(lev_key) or os.getenv(f"{prefix}{sym}_LEVERAGE")
+            
             if lev_val:
                 try:
                     leverage_overrides[sym] = int(lev_val)
                 except ValueError:
-                    logger.warning(f"Invalid leverage override for {lev_key}: {lev_val!r}")
+                    logger.warning(f"Invalid leverage override for {sym}: {lev_val!r}")
 
         acc = AccountConfig(
             name=name,
