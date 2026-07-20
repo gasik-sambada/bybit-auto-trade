@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class TradeRequest:
     """Parsed incoming trade command."""
 
-    action: str           # "open", "close_all", "update_sl_tp", or "partial_tp"
+    action: str           # "open", "close_all", "cancel_orders", "update_sl_tp", or "partial_tp"
     symbol: str           # e.g. "BTCUSDT.P" (with .P suffix for perpetuals)
     side: str = ""        # "BUY" or "SELL" (for "open")
     price: str = ""       # entry price as string (for Limit orders)
@@ -157,12 +157,39 @@ async def _execute_for_account(
     if req.action == "partial_tp":
         return await _handle_partial_tp(client, account, symbol_cfg, req)
 
+    if req.action == "cancel_orders":
+        return await _handle_cancel_orders(client, account, symbol_cfg, req)
+
     return TradeResult(
         account_name=account.name,
         symbol=symbol_cfg.symbol,
         success=False,
         error=f"Unknown action: {req.action!r}",
     )
+
+
+async def _handle_cancel_orders(
+    client: BybitClient,
+    account: AccountConfig,
+    symbol_cfg: SymbolConfig,
+    req: TradeRequest,
+) -> TradeResult:
+    """Handle cancel_orders action: cancel open orders WITHOUT closing positions."""
+    try:
+        await client.cancel_all_orders(symbol_cfg)
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol_cfg.symbol,
+            success=True,
+        )
+    except Exception as exc:
+        logger.error(f"[{account.name}] cancel_orders failed for {symbol_cfg.symbol}: {exc}")
+        return TradeResult(
+            account_name=account.name,
+            symbol=symbol_cfg.symbol,
+            success=False,
+            error=str(exc),
+        )
 
 
 async def _handle_close_all(
