@@ -5,12 +5,14 @@ Supports SPOT and FUTURES (linear perpetuals).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
 import ssl
 import time
-from typing import Any, Dict, Optional
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Dict, Optional, Tuple
 
 import certifi
 import httpx
@@ -31,6 +33,9 @@ _SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 # Shared httpx client — reused across all requests for connection pooling.
 # verify= accepts an ssl.SSLContext directly in httpx.
 _HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+# Cache of price tick sizes: (base_url, category, api_symbol) -> Decimal
+_TICK_CACHE: Dict[Tuple[str, str, str], Decimal] = {}
 
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -128,6 +133,42 @@ class BybitClient:
         resp = await client.get(url, params=params, headers=headers)
         return resp.json()
 
+    # ── Instrument info / price precision ─────────────────────────────────────
+
+    async def get_tick_size(self, symbol_cfg: SymbolConfig) -> Optional[Decimal]:
+        """Return the price tick size for a symbol (cached). None if unavailable."""
+        category = "linear" if symbol_cfg.is_futures() else "spot"
+        key = (self._base, category, symbol_cfg.api_symbol)
+        if key in _TICK_CACHE:
+            return _TICK_CACHE[key]
+        try:
+            client = _get_http_client()
+            resp = await client.get(
+                f"{self._base}/v5/market/instruments-info",
+                params={"category": category, "symbol": symbol_cfg.api_symbol},
+            )
+            items = ((resp.json().get("result") or {}).get("list")) or []
+            tick = Decimal(items[0]["priceFilter"]["tickSize"]) if items else None
+        except Exception as exc:
+            logger.warning(f"[{self._account.name}] Could not fetch tick size for {symbol_cfg.symbol}: {exc}")
+            return None
+        if tick:
+            _TICK_CACHE[key] = tick
+        return tick
+
+    async def round_price(self, symbol_cfg: SymbolConfig, price: Optional[str]) -> Optional[str]:
+        """Round a price string to the symbol's tick size. "0" / None are passed through."""
+        if price is None or price == "" or price == "0":
+            return price
+        tick = await self.get_tick_size(symbol_cfg)
+        if not tick:
+            return price
+        rounded = (Decimal(str(price)) / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * tick
+        result = format(rounded.quantize(tick), "f")
+        if result != str(price):
+            logger.info(f"[{self._account.name}] Rounded price {price} -> {result} (tick={tick}) for {symbol_cfg.symbol}")
+        return result
+
     # ── Leverage ──────────────────────────────────────────────────────────────
 
     async def set_leverage(self, symbol_cfg: SymbolConfig, leverage: int) -> None:
@@ -176,14 +217,23 @@ class BybitClient:
         if order_type == "Limit":
             if not price:
                 raise ValueError("price is required for Limit orders")
+            price = await self.round_price(symbol_cfg, price)
             payload["price"] = price
 
         # SL/TP only for FUTURES
         if symbol_cfg.is_futures():
+            # Prices MUST match the instrument tick size, otherwise Bybit accepts
+            # the order but silently fails to attach the TP/SL after the fill.
+            sl = await self.round_price(symbol_cfg, sl) if sl else None
+            tp = await self.round_price(symbol_cfg, tp) if tp else None
             if sl:
                 payload["stopLoss"] = sl
+                payload["slTriggerBy"] = "LastPrice"
             if tp:
                 payload["takeProfit"] = tp
+                payload["tpTriggerBy"] = "LastPrice"
+            if sl or tp:
+                payload["tpslMode"] = "Full"
             # Hedge-mode: positionIdx=0 means one-way mode
             payload["positionIdx"] = 0
 
@@ -196,13 +246,27 @@ class BybitClient:
     # ── Cancel & Close ────────────────────────────────────────────────────────
 
     async def cancel_all_orders(self, symbol_cfg: SymbolConfig) -> None:
-        """Cancel all open orders for a symbol."""
+        """Cancel all open (regular) orders for a symbol.
+
+        IMPORTANT: position TP/SL on Bybit are stored as conditional orders.
+        Calling /v5/order/cancel-all WITHOUT orderFilter cancels *every* order
+        type — including the TP/SL of a freshly opened position. That is why
+        positions ended up with no SL/TP when a close_all/cancel_orders signal
+        arrived around the same time as an open signal.
+
+        orderFilter="Order" restricts cancellation to regular active orders
+        (pending limit entries, partial-TP limits) and leaves position TP/SL intact.
+        TP/SL of a position that gets closed are removed by Bybit automatically.
+        """
         category = "linear" if symbol_cfg.is_futures() else "spot"
+        payload: Dict[str, Any] = {
+            "category": category,
+            "symbol":   symbol_cfg.api_symbol,
+        }
+        if symbol_cfg.is_futures():
+            payload["orderFilter"] = "Order"
         try:
-            await self._post("/v5/order/cancel-all", {
-                "category": category,
-                "symbol":   symbol_cfg.api_symbol,
-            })
+            await self._post("/v5/order/cancel-all", payload)
             logger.info(f"[{self._account.name}] Cancelled all orders for {symbol_cfg.symbol}")
         except RuntimeError as exc:
             logger.warning(f"[{self._account.name}] cancel-all failed for {symbol_cfg.symbol}: {exc}")
@@ -319,6 +383,9 @@ class BybitClient:
             logger.warning(f"[{self._account.name}] No open positions for {symbol_cfg.symbol} — skipping SL/TP update")
             return
 
+        sl = await self.round_price(symbol_cfg, sl) if sl is not None else None
+        tp = await self.round_price(symbol_cfg, tp) if tp is not None else None
+
         for pos in positions:
             size = pos.get("size", "0")
             side = pos.get("side", "")
@@ -329,14 +396,68 @@ class BybitClient:
                 "category":    "linear",
                 "symbol":      symbol_cfg.api_symbol,
                 "positionIdx": 0,  # one-way mode
+                "tpslMode":    "Full",
             }
             if sl is not None:
                 payload["stopLoss"] = sl
             if tp is not None:
                 payload["takeProfit"] = tp
 
-            await self._post("/v5/position/trading-stop", payload)
+            try:
+                await self._post("/v5/position/trading-stop", payload)
+            except RuntimeError as exc:
+                # 34040 = "not modified" (values already set) — safe to ignore
+                if "34040" in str(exc):
+                    logger.info(f"[{self._account.name}] SL/TP already set for {symbol_cfg.symbol}")
+                    continue
+                raise
             logger.info(
                 f"[{self._account.name}] Updated SL/TP for {symbol_cfg.symbol} "
                 f"side={side} sl={sl} tp={tp}"
             )
+
+    async def ensure_position_sl_tp(
+        self,
+        symbol_cfg: SymbolConfig,
+        sl: Optional[str],
+        tp: Optional[str],
+        attempts: int = 5,
+        delay: float = 0.5,
+    ) -> None:
+        """
+        Verify that the freshly opened position has SL/TP attached; if not, set it
+        explicitly via /v5/position/trading-stop.
+
+        Safety net: Bybit returns retCode 0 for the order even when the attached
+        TP/SL is rejected after the fill, so we must check the position itself.
+        """
+        if not symbol_cfg.is_futures() or (not sl and not tp):
+            return
+
+        for i in range(attempts):
+            positions = await self.get_positions(symbol_cfg)
+            active = [
+                p for p in positions
+                if p.get("side") and p.get("size") not in (None, "", "0", "0.0")
+            ]
+            if active:
+                pos = active[0]
+                has_sl = (not sl) or float(pos.get("stopLoss") or 0) > 0
+                has_tp = (not tp) or float(pos.get("takeProfit") or 0) > 0
+                if has_sl and has_tp:
+                    logger.info(
+                        f"[{self._account.name}] Verified SL/TP on {symbol_cfg.symbol}: "
+                        f"sl={pos.get('stopLoss')} tp={pos.get('takeProfit')}"
+                    )
+                    return
+                logger.warning(
+                    f"[{self._account.name}] Position {symbol_cfg.symbol} opened WITHOUT SL/TP "
+                    f"(sl={pos.get('stopLoss')} tp={pos.get('takeProfit')}) — setting now"
+                )
+                await self.update_position_sl_tp(symbol_cfg, sl=sl or None, tp=tp or None)
+                return
+            await asyncio.sleep(delay)
+
+        raise RuntimeError(
+            f"Position for {symbol_cfg.symbol} not found after order — could not verify SL/TP"
+        )

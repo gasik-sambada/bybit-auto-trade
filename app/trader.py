@@ -358,19 +358,38 @@ async def _handle_open(
             sl=req.sl or None,
             tp=req.tp or None,
         )
-        return TradeResult(
-            account_name=account.name,
-            symbol=symbol,
-            success=True,
-            qty=qty_str,
-            order_type=effective_order_type,
-        )
     except Exception as exc:
         logger.error(f"[{account.name}] place_order failed for {symbol}: {exc}")
         return TradeResult(
             account_name=account.name, symbol=symbol, success=False,
             error=str(exc),
         )
+
+    # ── Verify SL/TP actually attached (Market FUTURES orders) ────────────────
+    # Bybit accepts the order even if the attached TP/SL is rejected after fill,
+    # so check the position and set SL/TP explicitly if it's missing.
+    if symbol_cfg.is_futures() and effective_order_type == "Market":
+        try:
+            await client.ensure_position_sl_tp(
+                symbol_cfg, sl=req.sl or None, tp=req.tp or None,
+            )
+        except Exception as exc:
+            logger.error(
+                f"[{account.name}] ⚠️ {symbol} position OPEN but SL/TP could not be set: {exc}"
+            )
+            return TradeResult(
+                account_name=account.name, symbol=symbol, success=False,
+                qty=qty_str, order_type=effective_order_type,
+                error=f"Order filled but SL/TP NOT set: {exc}",
+            )
+
+    return TradeResult(
+        account_name=account.name,
+        symbol=symbol,
+        success=True,
+        qty=qty_str,
+        order_type=effective_order_type,
+    )
 
 
 async def _handle_partial_tp(

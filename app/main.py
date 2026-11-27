@@ -149,8 +149,8 @@ async def trade(request: Request):
 
     if not symbol:
         return {"status": "error", "error": "symbol is required"}
-    if action not in ("open", "close_all", "update_sl_tp", "partial_tp"):
-        return {"status": "error", "error": f"Unsupported action: {action!r} (expected open, close_all, update_sl_tp, or partial_tp)"}
+    if action not in ("open", "close_all", "cancel_orders", "update_sl_tp", "partial_tp"):
+        return {"status": "error", "error": f"Unsupported action: {action!r} (expected open, close_all, cancel_orders, update_sl_tp, or partial_tp)"}
 
     logger.info(f"📩 /trade: action={action} symbol={symbol} side={data.get('side', '')} "
                 f"price={data.get('price', '')} sl={data.get('sl', '')} order_type={data.get('order_type', '(default)')}")
